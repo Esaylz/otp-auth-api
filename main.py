@@ -4,10 +4,15 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr
 from sqlmodel import SQLModel, Field, Session, create_engine, select
+from jose import jwt, JWTError
 
 
+SECRET_KEY = "secret-key"
+ALGORITHM = "HS256"
+JWT_LIFETIME_HOURS = 24
 OTP_LIFETIME_MINUTES = 5
 
 DATABASE_URL = "sqlite:///./app.db"
@@ -34,6 +39,15 @@ class VerifyRequest(BaseModel):
     email: EmailStr
     code: str
 
+class UserResponse(BaseModel):
+    id: int
+    email: str
+    is_verified: bool
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
 class MessageResponse(BaseModel):
     message: str
 
@@ -50,6 +64,34 @@ def get_session():
 
 def generate_otp_code() -> str:
     return "".join(random.choices(string.digits, k=6))
+
+def create_jwt_token(user_id: int, email: str) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(hours=JWT_LIFETIME_HOURS)
+    payload = {"user_id": user_id, "email": email, "exp": expire}
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+def decode_jwt_token(token: str) -> dict:
+    try:
+        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Невалидный или истёкший токен")
+
+bearer_scheme = HTTPBearer(auto_error=False)
+
+def get_current_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    session: Session = Depends(get_session),
+) -> User:
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Требуется токен авторизации")
+
+    token = credentials.credentials
+    payload = decode_jwt_token(token)
+
+    user = session.get(User, payload.get("user_id"))
+    if not user:
+        raise HTTPException(status_code=401, detail="Пользователь не найден")
+    return user
 
 def issue_new_otp(user_id: int, session: Session) -> str:
     old_codes = session.exec(
@@ -137,7 +179,7 @@ def login(data: EmailRequest, session: Session = Depends(get_session)):
     return MessageResponse(message="Код для входа отправлен на email")
 
 
-@app.post("/auth/confirm", response_model=MessageResponse)
+@app.post("/auth/confirm", response_model=TokenResponse)
 def confirm(data: VerifyRequest, session: Session = Depends(get_session)):
     user = session.exec(select(User).where(User.email == data.email)).first()
     if not user:
@@ -145,14 +187,19 @@ def confirm(data: VerifyRequest, session: Session = Depends(get_session)):
 
     verify_otp(user.id, data.code, session)
 
-    return MessageResponse(message="Вход подтверждён")
+    token = create_jwt_token(user.id, user.email)
+    return TokenResponse(access_token=token)
 
 
-@app.get("/auth/me", response_model=MessageResponse)
-def me():
-    return MessageResponse(message="")
+@app.get("/auth/me", response_model=UserResponse)
+def me(current_user: User = Depends(get_current_user)):
+    return UserResponse(
+        id=current_user.id,
+        email=current_user.email,
+        is_verified=current_user.is_verified,
+    )
 
 
 @app.post("/auth/logout", response_model=MessageResponse)
-def logout():
-    return MessageResponse(message="")
+def logout(current_user: User = Depends(get_current_user)):
+    return MessageResponse(message="Вы вышли из системы")
