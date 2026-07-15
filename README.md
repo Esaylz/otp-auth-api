@@ -47,6 +47,10 @@ uvicorn main:app --reload
 ```json
 {"email": "user@example.com", "code": "новый код"}
 ```
-Подтверждает вход.
+Подтверждает вход и выдаёт JWT-токен (access_token) на 24 часа.
 
+7. GET /auth/me и POST /auth/logout требуют токен. В Swagger нажать кнопку
+   Authorize вверху страницы и вставить туда токен (без слова Bearer,
+   Swagger добавит его сам). После этого Execute на /auth/me вернёт данные
+   пользователя, без токена — 401.
 
